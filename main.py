@@ -104,6 +104,32 @@ def main():
                         results_dir,
                         is_best,
                         is_last)
+                        
+from torch.utils.data.dataloader import _SingleProcessDataLoaderIter
+class CUDAPrefetcher(_SingleProcessDataLoaderIter):
+    def __init__(self, loader, device=None, priority=0):
+        if not torch.cuda.is_available():
+            raise Exception("Only CUDA")
+        super(CUDAPrefetcher, self).__init__(loader)
+        self.device = device
+        self.stream = torch.cuda.Stream(device=device, priority=priority)
+        self.last = None
+
+    def __next__(self):
+        torch.cuda.default_stream(device=self.device).wait_stream(stream=self.stream)
+        result = self.last
+        if result is None:
+            result = super(CUDAPrefetcher, self).__next__()  # may raise StopIteration
+            for x, d in enumerate(result):
+                result[x] = d.to(device=self.device, non_blocking=False)
+        try:
+            self.last = super(CUDAPrefetcher, self).__next__()
+            with torch.cuda.stream(stream=self.stream):
+                for x, d in enumerate(self.last):
+                    self.last[x] = d.to(device=self.device, non_blocking=True)
+        except StopIteration:
+            self.last = None
+        return result
 
 
 def load_dataset() -> [CUDAPrefetcher, CUDAPrefetcher]:
